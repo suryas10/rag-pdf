@@ -1,0 +1,63 @@
+app:
+  name: "RAG-PDF"
+  host: "127.0.0.1"
+  port: 8000
+  log_level: "info"
+
+embeddings:
+  text_model: "nomic-ai/nomic-embed-text-v1.5"
+  vision_model: "nomic-ai/nomic-embed-vision-v1.5"
+  batch_size: 64
+  matryoshka_dim: 512
+  chunk_size: 500
+  vector_size: 512
+  overlap: 50
+
+vectorstore:
+  type: qdrant
+  collection: rag_chunks
+  path: "./qdrant_local"
+  ann_index: hnsw
+  parallel_upserts: true
+  vector_size: 512
+
+
+llm:
+  provider: groq
+  model: "llama-3.3-70b-versatile"  # Options: llama-3.1-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768, gemma2-9b-it
+  base_url: "https://api.groq.com/openai/v1"
+  temperature: 0.2
+  max_tokens: 800
+  api_key: null  # Set via environment variable GROQ_API_KEY
+
+coref:
+  enabled: true
+  spacy_model: "en_core_web_trf"
+  fallback_model: "en_core_web_sm"
+  coref_component: "coref"
+  use_gpu: true
+
+intent:
+  enabled: true
+  default_intent: "qa"
+  confidence_threshold: 0.6
+
+ingestion:
+  image_format: "jpg"
+  image_dpi: 300
+  max_chunk_size: 800
+  min_chunk_size: 500
+  chunk_overlap: 50
+
+retrieval:
+  top_k: 5
+  similarity_threshold: 0.5
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  reload: true
+
+streamlit:
+  port: 8501
+
