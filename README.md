@@ -9,7 +9,7 @@ A complete Retrieval-Augmented Generation (RAG) system for PDF documents with te
 - 🧠 **Nomic Embeddings**: Text embeddings using `nomic-embed-text-v1.5` and vision embeddings using `nomic-embed-vision-v1.5`
 - 🗄️ **Qdrant Vector Store**: Local persistent vector database for storing embeddings
 - 🔍 **Hybrid Retrieval**: Context-aware retrieval with coreference resolution and intent classification
-- 🤖 **DeepSeek LLM**: Generate responses using DeepSeek Reasoner model
+- 🤖 **Grok LLM**: Generate responses using Grok Reasoner model
 - 💬 **Streamlit UI**: User-friendly interface for uploading PDFs and chatting with documents
 
 ## Setup
@@ -51,18 +51,18 @@ For PDF to image conversion, you may need system dependencies:
 
 ### 5. Set Environment Variables
 
-Set your DeepSeek API key:
+Set your Grok API key:
 
 ```bash
 # Windows PowerShell
-$env:DEEPSEEK_API_KEY="your-api-key-here"
+$env:Grok_API_KEY="your-api-key-here"
 
 ```
 
 Or create a `.env` file (not included in repo):
 
 ```
-DEEPSEEK_API_KEY=your-api-key-here
+Grok_API_KEY=your-api-key-here
 ```
 
 ### 6. Configure Settings
@@ -174,7 +174,7 @@ rag-pdf/
 │   │   ├── coref_resolver.py      # Coreference resolution
 │   │   └── intent_classifier.py   # Intent classification
 │   └── llm/
-│       └── deepseek_inference.py  # DeepSeek LLM integration
+│       └── Grok_inference.py  # Grok LLM integration
 └── qdrant_local/              # Qdrant data (created automatically)
 ```
 
@@ -201,7 +201,7 @@ Key settings in `config.yaml`:
 2. **Model Download Issues**: Check internet connection for model downloads
 3. **Poppler Not Found**: Install poppler-utils for PDF image extraction
 4. **Out of Memory**: Reduce batch sizes in config.yaml
-5. **DeepSeek API Error**: Verify API key is set correctly
+5. **Grok API Error**: Verify API key is set correctly
 
 
 ## Validate setup
