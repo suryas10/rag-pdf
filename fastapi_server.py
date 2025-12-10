@@ -27,7 +27,7 @@ from backend.vectorstore.qdrant_client import QdrantVectorStore
 from backend.vectorstore.retriever import HybridRetriever
 from backend.coref_intent.coref_resolver import CorefResolver
 from backend.coref_intent.intent_classifier import IntentClassifier
-from backend.llm.deepseek_inference import GroqInference
+from backend.llm.grok_inference import GroqInference
 
 app = FastAPI(title="RAG PDF API", version="1.0.0")
 
