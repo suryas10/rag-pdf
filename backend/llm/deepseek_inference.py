@@ -5,8 +5,8 @@ Supports streaming responses.
 
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
-
 from openai import OpenAI
+
 from typing import List, Dict, Optional, Generator, Union
 import os
 
@@ -22,16 +22,6 @@ class GroqInference:
         temperature: float = 0.2,
         max_tokens: int = 800
     ):
-        """
-        Initialize Groq inference client.
-        
-        Args:
-            api_key: Groq API key (from env if None)
-            base_url: API base URL
-            model: Model name (e.g., llama-3.1-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768)
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
-        """
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         if not self.api_key:
             raise ValueError("Groq API key must be provided or set in GROQ_API_KEY environment variable")
@@ -40,7 +30,6 @@ class GroqInference:
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
-        
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url
@@ -67,12 +56,12 @@ class GroqInference:
         """
         system_prompt = """You are a helpful AI assistant that answers questions based on the provided context from documents.
         
-Guidelines:
-- Use only information from the provided context to answer questions
-- If the context doesn't contain enough information, say so
-- Cite specific page numbers or sections when referencing the document
-- Be concise and accurate
-- If asked about something not in the context, politely decline"""
+        Guidelines:
+        - Use only information from the provided context to answer questions
+        - If the context doesn't contain enough information, say so
+        - Cite specific page numbers or sections when referencing the document
+        - Be concise and accurate
+        - If asked about something not in the context, politely decline"""
         
         messages = [{"role": "system", "content": system_prompt}]
         
