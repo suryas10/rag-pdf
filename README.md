@@ -47,7 +47,7 @@ pip install https://github.com/explosion/spacy-models/releases/download/en_core_
 For PDF to image conversion, you may need system dependencies:
 
 **Windows**: Install poppler from [here](https://github.com/oschwartz10612/poppler-windows/releases/tag/v24.07.0-0)
-1. Click on Release-24.07.0-0.zip
+1. Click on `Release-24.07.0-0.zip`
 2. Unzip and Move the folder `poppler-24.07.0` to `C:\Program Files\`
 4. Add path `C:\Program Files\poppler-24.07.0\Library\bin` to the Environment Variable
 
