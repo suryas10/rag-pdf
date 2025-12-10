@@ -1,49 +1,59 @@
-# ======================================================
-# 🚀  RAG + spaCy-Coref + CUDA 13.0 (RTX 4060, Python 3.11)
-#  Verified stack — no dependency conflicts.
-# ======================================================
-
-# === UI / API Frameworks ===
-streamlit==1.51.0
+# ==== Core Backend ====
 fastapi==0.121.0
 uvicorn[standard]==0.38.0
-qdrant-client==1.15.1
+python-dotenv==1.2.1
+pydantic==2.12.3
+aiofiles==25.1.0
+python-multipart==0.0.20
 
-# === Transformers & Embeddings ===
-transformers==4.48.3
+# ==== RAG Embeddings ====
 sentence-transformers==3.0.1
+transformers==4.48.3
 einops==0.7.0
 
-# === PDF & Image Processing ===
-pdf2image==1.17.0
-Pillow==12.0.0
-pypdf==6.1.3
-
-# === OpenAI API ===
-openai==2.7.1
-
-# === spaCy Core (for NLP intent classification etc.) ===
-spacy==3.7.4
-thinc==8.2.5
-catalogue==2.0.10
-srsly==2.5.1
-cymem==2.0.11
-preshed==3.0.10
-murmurhash==1.0.13
-blis==0.7.11
-spacy-legacy==3.0.12
-wasabi==1.1.3
-
-# === Torch (GPU build, CUDA 12.1) ===
+# ==== Torch (GPU 12.1) ====
 torch==2.1.2+cu121
 torchvision==0.16.2+cu121
-torchaudio==2.1.2+cu121
+torchaudio==2.1.2+cu121 
 --extra-index-url https://download.pytorch.org/whl/cu121
 
-# === Core Utilities ===
+# ==== PDF & Image Processing ====
+pypdf==6.1.3
+pdf2image==1.17.0
+pillow==12.0.0
+
+# ==== Vector Database (Qdrant) ====
+qdrant-client==1.15.1
+
+# ==== NLP / spaCy ====
+spacy==3.7.4
+spacy-legacy==3.0.12
+spacy-loggers==1.0.5
+srsly==2.5.1
+thinc==8.2.5
+preshed==3.0.10
+cymem==2.0.11
+murmurhash==1.0.13
+blis==0.7.11
+
+# ==== Utilities ====
 numpy==1.26.4
+pandas==2.3.3
+scikit-learn==1.8.0
+scipy==1.16.3
 tqdm==4.67.1
 pyyaml==6.0.3
-python-multipart==0.0.20
-aiofiles==25.1.0
-pydantic==2.12.3
+
+# ==== Frontend ====
+streamlit==1.52.1
+altair==5.5.0
+
+# ==== Official APIs ====
+openai==2.7.1
+
+# ==== System / IO ====
+requests==2.32.5
+urllib3==2.6.1
+filelock==3.20.0
+portalocker==3.2.0
+watchfiles==1.1.1
