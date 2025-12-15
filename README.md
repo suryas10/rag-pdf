@@ -57,14 +57,14 @@ Set your Grok API key:
 
 ```bash
 # Windows PowerShell
-$env:Grok_API_KEY="your-api-key-here"
+$env:GROK_API_KEY="your-api-key-here"
 
 ```
 
 Or create a `.env` file (not included in repo):
 
 ```
-Grok_API_KEY=your-api-key-here
+GROK_API_KEY=your-api-key-here
 ```
 
 ### 6. Configure Settings
