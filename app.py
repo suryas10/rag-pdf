@@ -35,7 +35,7 @@ if "current_file_id" not in st.session_state:
 def check_api_health():
     """Check if API is available"""
     try:
-        response = requests.get(f"{API_BASE_URL}/health", timeout=5)
+        response = requests.get(f"{API_BASE_URL}/health", timeout=50)
         return response.status_code == 200
     except:
         return False
@@ -45,12 +45,16 @@ def upload_file(file):
     """Upload PDF file to backend"""
     try:
         files = {"file": (file.name, file.getvalue(), "application/pdf")}
-        response = requests.post(f"{API_BASE_URL}/upload", files=files)
+        # Set a long timeout for large PDFs - 10 minutes
+        response = requests.post(f"{API_BASE_URL}/upload", files=files, timeout=600)
         if response.status_code == 200:
             return response.json()
         else:
             st.error(f"Upload failed: {response.text}")
             return None
+    except requests.exceptions.Timeout:
+        st.error("Upload timed out. The file may be too large or the server is busy.")
+        return None
     except Exception as e:
         st.error(f"Error uploading file: {str(e)}")
         return None
@@ -59,7 +63,7 @@ def upload_file(file):
 def get_ingestion_status(job_id: str):
     """Get ingestion job status"""
     try:
-        response = requests.get(f"{API_BASE_URL}/ingestion/status/{job_id}")
+        response = requests.get(f"{API_BASE_URL}/ingestion/status/{job_id}", timeout=10)
         if response.status_code == 200:
             return response.json()
         else:
@@ -77,12 +81,15 @@ def query_rag(query: str, file_id: str = None, use_coref: bool = True, use_inten
             "use_coref": use_coref,
             "use_intent": use_intent
         }
-        response = requests.post(f"{API_BASE_URL}/query", json=payload)
+        response = requests.post(f"{API_BASE_URL}/query", json=payload, timeout=60)
         if response.status_code == 200:
             return response.json()
         else:
             st.error(f"Query failed: {response.text}")
             return None
+    except requests.exceptions.Timeout:
+        st.error("Query timed out. Please try again.")
+        return None
     except Exception as e:
         st.error(f"Error querying: {str(e)}")
         return None
@@ -130,12 +137,13 @@ def main():
                             "job_id": job_id,
                             "status": "processing"
                         })
-                        st.success(f"File uploaded successfully!")
+                        st.success(f"File uploaded successfully! Processing in background...")
+                        st.info("📊 Monitor ingestion progress below. The page will auto-refresh.")
                         st.rerun()
-        
+
         # Display uploaded files
         if st.session_state.uploaded_files:
-            st.header("Uploaded Files")
+            st.header("📁 Uploaded Files")
             for idx, file_info in enumerate(st.session_state.uploaded_files):
                 with st.container():
                     st.text(file_info["filename"])
@@ -255,6 +263,12 @@ def main():
                     st.error("Failed to get response from API")
                     st.session_state.conversation_history.pop()
         
+        st.rerun()
+
+    # Auto-refresh if any files are processing
+    has_processing = any(f.get("status") == "processing" for f in st.session_state.uploaded_files)
+    if has_processing:
+        time.sleep(2)  # Wait 2 seconds before refreshing
         st.rerun()
 
 
