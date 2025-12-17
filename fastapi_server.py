@@ -50,6 +50,17 @@ llm = None
 ingestion_jobs = {}
 
 
+def clear_memory_and_vectors(file_id: Optional[str] = None):
+    """Clear retriever memory and optionally delete vectors by file."""
+    if retriever:
+        retriever.memory = []
+    if file_id and vector_store:
+        try:
+            vector_store.delete_by_file_id(file_id)
+        except Exception as e:
+            print(f"Failed to delete vectors for file {file_id}: {e}")
+
+
 def load_config():
     """Load configuration from config.yaml"""
     global config
@@ -182,6 +193,10 @@ class IngestionStatus(BaseModel):
     message: str
 
 
+class ClearConversationRequest(BaseModel):
+    file_id: Optional[str] = None
+
+
 async def process_ingestion(
     job_id: str,
     pdf_bytes: bytes,
@@ -196,6 +211,12 @@ async def process_ingestion(
         }
         
         file_id = str(uuid.uuid4())
+
+        # Clear any existing vectors so only the latest file remains
+        try:
+            vector_store.clear_collection()
+        except Exception as e:
+            print(f"Failed to clear collection before new ingestion: {e}")
         
         # Step 1: Extract text
         ingestion_jobs[job_id]["message"] = "Extracting text from PDF..."
@@ -375,6 +396,13 @@ async def query(request: QueryRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+
+
+@app.post("/conversation/clear")
+async def clear_conversation(request: ClearConversationRequest):
+    """Clear conversation memory and optionally delete vectors for a file."""
+    clear_memory_and_vectors(request.file_id)
+    return {"status": "cleared", "file_id": request.file_id}
 
 
 @app.post("/coref", response_model=CorefResponse)

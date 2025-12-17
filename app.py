@@ -95,6 +95,16 @@ def query_rag(query: str, file_id: str = None, use_coref: bool = True, use_inten
         return None
 
 
+def clear_conversation_api(file_id: str = None):
+    """Clear conversation on backend and optionally delete vectors for a file."""
+    try:
+        payload = {"file_id": file_id} if file_id else {}
+        response = requests.post(f"{API_BASE_URL}/conversation/clear", json=payload, timeout=10)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
 def display_source(source: Dict, index: int):
     """Display a source chunk with metadata"""
     with st.expander(f"Source {index + 1} (Page {source.get('metadata', {}).get('page_no', '?')}, Score: {source.get('score', 0):.2f})"):
@@ -176,7 +186,14 @@ def main():
         
         # Clear conversation
         if st.button("Clear Conversation"):
-            st.session_state.conversation_history = []
+            cleared = clear_conversation_api(st.session_state.current_file_id)
+            if cleared:
+                st.session_state.conversation_history = []
+                st.session_state.uploaded_files = []
+                st.session_state.current_file_id = None
+                st.success("Conversation and vectors cleared.")
+            else:
+                st.error("Failed to clear conversation on server.")
             st.rerun()
     
     # Main chat interface
