@@ -63,6 +63,9 @@ class NomicVisionEmbedder:
         """
         if isinstance(images, Image.Image):
             images = [images]
+
+        if not images:
+            return np.empty((0, 0)) if convert_to_numpy else torch.empty((0, 0))
         
         all_embeddings = []
         
@@ -80,8 +83,18 @@ class NomicVisionEmbedder:
             # Get embeddings
             with torch.no_grad():
                 outputs = self.model(**inputs)
-                # Use [CLS] token (first token) as embedding
-                img_embeddings = outputs.last_hidden_state[:, 0]
+                if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+                    img_embeddings = outputs.pooler_output
+                else:
+                    # Use [CLS] token (first token) as embedding
+                    img_embeddings = outputs.last_hidden_state[:, 0]
+
+            if img_embeddings.device.type != self.device:
+                raise RuntimeError(
+                    f"Image embeddings are on {img_embeddings.device.type} but expected {self.device}"
+                )
+
+            img_embeddings = img_embeddings.float()
             
             # L2 normalize
             img_embeddings = F.normalize(img_embeddings, p=2, dim=1)

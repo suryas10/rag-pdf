@@ -128,12 +128,15 @@ class Chunker:
         chunk_idx = 0
         start_char = 0
         
+        target_size = self.chunk_size or self.max_chunk_size
+        max_size = self.max_chunk_size or target_size
+
         for sentence in sentences:
             sentence_length = len(sentence)
             sentence_tokens = self._estimate_tokens(sentence)
             
             # If adding this sentence would exceed max size, save current chunk
-            if current_length + sentence_tokens > self.max_chunk_size and current_chunk:
+            if current_length + sentence_tokens > max_size and current_chunk:
                 chunk_text = ' '.join(current_chunk)
                 if len(chunk_text) >= self.min_chunk_size:
                     chunk_id = f"{chunk_prefix}page_{page_no}_chunk_{chunk_idx}"

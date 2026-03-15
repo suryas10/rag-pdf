@@ -40,7 +40,8 @@ class GroqInference:
         query: str,
         context: str,
         intent: str = "qa",
-        conversation_history: Optional[List[Dict]] = None
+        conversation_history: Optional[List[Dict]] = None,
+        conversation_summary: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
         Build prompt with query, context, and conversation history.
@@ -64,6 +65,12 @@ class GroqInference:
         - If asked about something not in the context, politely decline"""
         
         messages = [{"role": "system", "content": system_prompt}]
+
+        if conversation_summary:
+            messages.append({
+                "role": "system",
+                "content": f"Conversation summary so far:\n{conversation_summary}"
+            })
         
         # Add conversation history if available
         if conversation_history:
@@ -89,6 +96,7 @@ Please answer the question based on the context above. Include citations when re
         context: str,
         intent: str = "qa",
         conversation_history: Optional[List[Dict]] = None,
+        conversation_summary: Optional[str] = None,
         stream: bool = True
     ) -> Union[str, Generator[str, None, None]]:
         """
@@ -104,7 +112,7 @@ Please answer the question based on the context above. Include citations when re
         Returns:
             Response string or generator of chunks
         """
-        messages = self.build_prompt(query, context, intent, conversation_history)
+        messages = self.build_prompt(query, context, intent, conversation_history, conversation_summary)
         
         try:
             response = self.client.chat.completions.create(
@@ -135,6 +143,7 @@ Please answer the question based on the context above. Include citations when re
         context_chunks: List[Dict],
         intent: str = "qa",
         conversation_history: Optional[List[Dict]] = None,
+        conversation_summary: Optional[str] = None,
         stream: bool = False
     ) -> Dict:
         """
@@ -158,17 +167,24 @@ Please answer the question based on the context above. Include citations when re
             page_no = metadata.get("page_no", "?")
             chunk_id = metadata.get("chunk_id", "")
             score = chunk.get("score", 0.0)
-            
-            context_parts.append(
-                f"[Source {i} - Page {page_no}, Relevance: {score:.2f}]\n{text}\n"
-            )
+
+            if metadata.get("type") == "image":
+                image_path = metadata.get("image_path", "")
+                context_parts.append(
+                    f"[Image Source {i} - Page {page_no}, Relevance: {score:.2f}]\n"
+                    f"Image available at: {image_path} (image content not included)\n"
+                )
+            else:
+                context_parts.append(
+                    f"[Source {i} - Page {page_no}, Relevance: {score:.2f}]\n{text}\n"
+                )
         
         context = "\n".join(context_parts)
         
         # Generate response
         if stream:
             response_stream = self.generate(
-                query, context, intent, conversation_history, stream=True
+                query, context, intent, conversation_history, conversation_summary, stream=True
             )
             return {
                 "response_stream": response_stream,
@@ -177,11 +193,62 @@ Please answer the question based on the context above. Include citations when re
             }
         else:
             response = self.generate(
-                query, context, intent, conversation_history, stream=False
+                query, context, intent, conversation_history, conversation_summary, stream=False
             )
             return {
                 "response": response,
                 "sources": context_chunks,
                 "intent": intent
             }
+
+    def rewrite_query(self, query: str, history_summary: str) -> str:
+        """Rewrite user query using conversation summary."""
+        if not history_summary:
+            return query
+
+        prompt = [
+            {
+                "role": "system",
+                "content": "Rewrite the user query to be self-contained using the conversation summary. Return only the rewritten query."
+            },
+            {
+                "role": "user",
+                "content": f"Summary:\n{history_summary}\n\nQuery:\n{query}"
+            }
+        ]
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=prompt,
+                temperature=0.0,
+                max_tokens=100,
+                stream=False
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            return query
+
+    def summarize_history(self, history_text: str) -> str:
+        """Summarize conversation history text for memory compression."""
+        if not history_text:
+            return ""
+        prompt = [
+            {
+                "role": "system",
+                "content": "Summarize the conversation history into a short, factual memory. Keep it under 8 bullet points."
+            },
+            {"role": "user", "content": history_text}
+        ]
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=prompt,
+                temperature=0.0,
+                max_tokens=180,
+                stream=False
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            return history_text[:800]
 

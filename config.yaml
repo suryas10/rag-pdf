@@ -4,7 +4,7 @@ app:
   port: 8000
   log_level: "info"
 
-embeddings:
+embedding:
   text_model: "nomic-ai/nomic-embed-text-v1.5"
   vision_model: "nomic-ai/nomic-embed-vision-v1.5"
   batch_size: 64
@@ -52,6 +52,9 @@ ingestion:
 retrieval:
   top_k: 5
   similarity_threshold: 0.5
+  max_history_turns: 10
+  summary_after: 8
+  max_context_chars: 12000
 
 server:
   host: "0.0.0.0"

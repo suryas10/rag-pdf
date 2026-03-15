@@ -43,7 +43,8 @@ class NomicTextEmbedder:
         self,
         texts: Union[str, List[str]],
         show_progress: bool = True,
-        convert_to_numpy: bool = False
+        convert_to_numpy: bool = False,
+        is_query: bool = False
     ) -> Union[torch.Tensor, np.ndarray]:
         """
         Encode texts into normalized embeddings (512D).
@@ -59,12 +60,16 @@ class NomicTextEmbedder:
         if isinstance(texts, str):
             texts = [texts]
 
+        if not texts:
+            return np.empty((0, self.matryoshka_dim)) if convert_to_numpy else torch.empty((0, self.matryoshka_dim))
+
         all_embeddings = []
 
         for i in tqdm(range(0, len(texts), self.batch_size),
                       desc="Encoding texts", disable=not show_progress):
             batch = texts[i:i + self.batch_size]
-            batch_prefixed = [f"search_query: {text}" for text in batch]
+            prefix = "search_query" if is_query else "search_document"
+            batch_prefixed = [f"{prefix}: {text}" for text in batch]
 
             with torch.no_grad():
                 embeddings = self.model.encode(batch_prefixed, convert_to_tensor=True)

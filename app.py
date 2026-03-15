@@ -1,292 +1,152 @@
 """
 Streamlit UI for RAG PDF system.
-Handles file uploads, displays ingestion progress, and provides chat interface.
+Control-panel layout with streaming chat, retrieval inspection, and observability.
 """
 
 from dotenv import load_dotenv
-load_dotenv()  # Load environment variables from .env file
+load_dotenv()
 
-import streamlit as st
-import requests
-import time
-import json
-from typing import List, Dict
 import os
+import streamlit as st
 
-# API configuration
+from ui.state import init_state
+from ui.api_client import APIClient
+from ui.components.sidebar import render_sidebar
+from ui.components.chat import render_chat_history, render_chat_input
+from ui.components.panels import render_retrieved_context, render_sources, render_debug_tabs, render_image_panel
+
+
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
-# Page configuration
-st.set_page_config(
-    page_title="WiM RAG PDF Chat",
-    page_icon="",
-    layout="wide"
-)
-
-# Initialize session state
-if "conversation_history" not in st.session_state:
-    st.session_state.conversation_history = []
-if "uploaded_files" not in st.session_state:
-    st.session_state.uploaded_files = []
-if "current_file_id" not in st.session_state:
-    st.session_state.current_file_id = None
-
-
-def check_api_health():
-    """Check if API is available"""
-    try:
-        response = requests.get(f"{API_BASE_URL}/health", timeout=50)
-        return response.status_code == 200
-    except:
-        return False
-
-
-def upload_file(file):
-    """Upload PDF file to backend"""
-    try:
-        files = {"file": (file.name, file.getvalue(), "application/pdf")}
-        # Set a long timeout for large PDFs - 10 minutes
-        response = requests.post(f"{API_BASE_URL}/upload", files=files, timeout=600)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"Upload failed: {response.text}")
-            return None
-    except requests.exceptions.Timeout:
-        st.error("Upload timed out. The file may be too large or the server is busy.")
-        return None
-    except Exception as e:
-        st.error(f"Error uploading file: {str(e)}")
-        return None
-
-
-def get_ingestion_status(job_id: str):
-    """Get ingestion job status"""
-    try:
-        response = requests.get(f"{API_BASE_URL}/ingestion/status/{job_id}", timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return None
-    except:
-        return None
-
-
-def query_rag(query: str, file_id: str = None, use_coref: bool = True, use_intent: bool = True):
-    """Query the RAG system"""
-    try:
-        payload = {
-            "query": query,
-            "file_id": file_id,
-            "use_coref": use_coref,
-            "use_intent": use_intent
-        }
-        response = requests.post(f"{API_BASE_URL}/query", json=payload, timeout=60)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"Query failed: {response.text}")
-            return None
-    except requests.exceptions.Timeout:
-        st.error("Query timed out. Please try again.")
-        return None
-    except Exception as e:
-        st.error(f"Error querying: {str(e)}")
-        return None
-
-
-def clear_conversation_api(file_id: str = None):
-    """Clear conversation on backend and optionally delete vectors for a file."""
-    try:
-        payload = {"file_id": file_id} if file_id else {}
-        response = requests.post(f"{API_BASE_URL}/conversation/clear", json=payload, timeout=10)
-        return response.status_code == 200
-    except Exception:
-        return False
-
-
-def display_source(source: Dict, index: int):
-    """Display a source chunk with metadata"""
-    with st.expander(f"Source {index + 1} (Page {source.get('metadata', {}).get('page_no', '?')}, Score: {source.get('score', 0):.2f})"):
-        st.text(source.get("text", ""))
-        metadata = source.get("metadata", {})
-        if metadata:
-            st.caption(f"Chunk ID: {metadata.get('chunk_id', 'N/A')}")
-            st.caption(f"File: {metadata.get('filename', 'N/A')}")
+st.set_page_config(page_title="RAG PDF Control Panel", layout="wide")
 
 
 def main():
-    """Main Streamlit app"""
-    st.title("WiM RAG PDF Chat System")
-    st.markdown("Upload PDFs, ingest them, and chat with your documents using AI")
-    
-    # Check API health
-    if not check_api_health():
-        st.error(f"⚠️ Cannot connect to API at {API_BASE_URL}. Please ensure the FastAPI server is running.")
-        st.info("Start the server with: `python fastapi_server.py`")
-        return
-    
-    # Sidebar for file upload and settings
-    with st.sidebar:
-        st.header("Upload Your Files")
-        
-        uploaded_file = st.file_uploader(
-            "Choose a PDF file",
-            type=['pdf'],
-            help="Upload a PDF file to ingest and query"
-        )
-        
-        if uploaded_file is not None:
-            if st.button("Upload & Ingest", type="primary"):
-                with st.spinner("Uploading file..."):
-                    result = upload_file(uploaded_file)
-                    if result:
-                        job_id = result.get("job_id")
-                        st.session_state.uploaded_files.append({
-                            "filename": result.get("filename"),
-                            "job_id": job_id,
-                            "status": "processing"
-                        })
-                        st.success(f"File uploaded successfully! Processing in background...")
-                        st.info("📊 Monitor ingestion progress below. The page will auto-refresh.")
-                        st.rerun()
+    init_state()
+    api = APIClient(API_BASE_URL)
 
-        # Display uploaded files
-        if st.session_state.uploaded_files:
-            st.header("📁 Uploaded Files")
-            for idx, file_info in enumerate(st.session_state.uploaded_files):
-                with st.container():
-                    st.text(file_info["filename"])
-                    job_id = file_info.get("job_id")
-                    if job_id:
-                        status_info = get_ingestion_status(job_id)
-                        if status_info:
-                            status = status_info.get("status", "unknown")
-                            progress = status_info.get("progress", 0.0)
-                            
-                            if status == "processing":
-                                st.progress(progress)
-                                st.caption(status_info.get("message", "Processing..."))
-                            elif status == "completed":
-                                st.success("✓ Ingested")
-                                file_id = status_info.get("file_id")
-                                if file_id:
-                                    file_info["file_id"] = file_id
-                                    file_info["status"] = "completed"
-                                    if st.button(f"Select", key=f"select_{idx}"):
-                                        st.session_state.current_file_id = file_id
-                                        st.rerun()
-                            elif status == "error":
-                                st.error(f"✗ Error: {status_info.get('message', 'Unknown error')}")
-        
-        # Settings
-        st.header("⚙️ Settings")
-        use_coref = st.checkbox("Use Coreference Resolution", value=True)
-        use_intent = st.checkbox("Use Intent Classification", value=True)
-        
-        # Clear conversation
-        if st.button("Clear Conversation"):
-            cleared = clear_conversation_api(st.session_state.current_file_id)
-            if cleared:
-                st.session_state.conversation_history = []
-                st.session_state.uploaded_files = []
-                st.session_state.current_file_id = None
-                st.success("Conversation and vectors cleared.")
-            else:
-                st.error("Failed to clear conversation on server.")
+    st.title("WiM RAG PDF Chat System")
+    st.caption("Upload PDFs, ingest them, and chat with your documents using AI.")
+
+    if not api.check_health():
+        st.error(f"Cannot connect to API at {API_BASE_URL}. Start FastAPI with: python fastapi_server.py")
+        return
+
+    settings = render_sidebar(api)
+
+    # Main layout
+    col_chat, col_context = st.columns([2, 1])
+    with col_chat:
+        st.subheader("Chat")
+        chat_box = st.container(height=520, border=True)
+        with chat_box:
+            render_chat_history(st.session_state.conversation_history)
+
+        if st.button("Clear chat", use_container_width=True):
+            st.session_state.conversation_history = []
+            st.session_state.retrieved_items = []
+            st.session_state.last_query_stats = {}
             st.rerun()
-    
-    # Main chat interface
-    st.header("💬 Chat with Your Documents")
-    
-    # Display conversation history
-    chat_container = st.container()
-    with chat_container:
-        for turn in st.session_state.conversation_history:
-            with st.chat_message("user"):
-                st.write(turn["query"])
-            
-            with st.chat_message("assistant"):
-                st.write(turn["response"])
-                
-                # Display sources if available
-                if turn.get("sources"):
-                    st.markdown("**Sources:**")
-                    for idx, source in enumerate(turn["sources"]):
-                        display_source(source, idx)
-                
-                # Display metadata
-                if turn.get("intent"):
-                    st.caption(f"Intent: {turn['intent']}")
-                if turn.get("resolved_query") and turn["resolved_query"] != turn["query"]:
-                    st.caption(f"Resolved query: {turn['resolved_query']}")
-    
-    # Query input
-    query = st.chat_input("Ask a question about your documents...")
-    
-    if query:
-        # Add user message to history
-        st.session_state.conversation_history.append({
-            "query": query,
-            "response": "",
-            "sources": [],
-            "intent": "",
-            "resolved_query": ""
-        })
-        
-        # Display user message
-        with st.chat_message("user"):
-            st.write(query)
-        
-        # Query backend
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                result = query_rag(
-                    query,
-                    file_id=st.session_state.current_file_id,
-                    use_coref=use_coref,
-                    use_intent=use_intent
-                )
-                
-                if result:
-                    response = result.get("response", "")
-                    sources = result.get("sources", [])
-                    intent = result.get("intent", "")
-                    resolved_query = result.get("resolved_query", "")
-                    
-                    # Update conversation history
-                    st.session_state.conversation_history[-1].update({
-                        "response": response,
-                        "sources": sources,
-                        "intent": intent,
-                        "resolved_query": resolved_query
-                    })
-                    
-                    # Display response
-                    st.write(response)
-                    
-                    # Display sources
-                    if sources:
-                        st.markdown("**Sources:**")
-                        for idx, source in enumerate(sources):
-                            display_source(source, idx)
-                    
-                    # Display metadata
-                    if intent:
-                        st.caption(f"Intent: {intent}")
-                    if resolved_query and resolved_query != query:
-                        st.caption(f"Resolved query: {resolved_query}")
-                else:
-                    st.error("Failed to get response from API")
-                    st.session_state.conversation_history.pop()
-        
-        st.rerun()
+
+        query = render_chat_input()
+
+        if query:
+            payload = {
+                "query": query,
+                "file_id": st.session_state.current_file_id,
+                "use_coref": True,
+                "use_intent": True,
+                "use_history": True,
+                "use_multimodal": settings["use_multimodal"],
+                "top_k": settings["top_k"]
+            }
+
+            if settings.get("image_query_file") is not None:
+                payload["image_query_base64"] = api.encode_image_to_base64(settings["image_query_file"].getvalue())
+
+            st.session_state.conversation_history.append({
+                "query": query,
+                "response": "",
+                "sources": [],
+                "intent": "",
+                "resolved_query": ""
+            })
+
+            with chat_box:
+                with st.chat_message("user"):
+                    st.write(query)
+
+                with st.chat_message("assistant"):
+                    response_placeholder = st.empty()
+                    response_text = ""
+
+                try:
+                    for event in api.query_stream(payload):
+                        if event.get("type") == "token":
+                            response_text += event.get("data", "")
+                            response_placeholder.write(response_text)
+                        if event.get("type") == "error":
+                            response_placeholder.error(event.get("message", "Streaming error"))
+                            break
+                        if event.get("type") == "final":
+                            st.session_state.retrieved_items = event.get("sources", [])
+                            stats = event.get("stats", {})
+                            stats["response_chars"] = len(response_text)
+                            stats["response_tokens_est"] = len(response_text) // 4
+                            st.session_state.last_query_stats = stats
+                            st.session_state.conversation_history[-1].update({
+                                "response": response_text,
+                                "sources": event.get("sources", []),
+                                "intent": event.get("intent", ""),
+                                "resolved_query": event.get("resolved_query", "")
+                            })
+                            st.session_state.debug_events.append(
+                                f"Query: {query} | chunks={stats.get('chunks_count')} | images={stats.get('images_count')} | ms={stats.get('retrieval_time_ms')}"
+                            )
+                            break
+                except Exception:
+                    result = api.query(payload)
+                    if result:
+                        response_text = result.get("response", "")
+                        response_placeholder.write(response_text)
+                        st.session_state.retrieved_items = result.get("sources", [])
+                        stats = result.get("stats", {})
+                        stats["response_chars"] = len(response_text)
+                        stats["response_tokens_est"] = len(response_text) // 4
+                        st.session_state.last_query_stats = stats
+                        st.session_state.conversation_history[-1].update({
+                            "response": response_text,
+                            "sources": result.get("sources", []),
+                            "intent": result.get("intent", ""),
+                            "resolved_query": result.get("resolved_query", "")
+                        })
+                        st.session_state.debug_events.append(
+                            f"Query: {query} | chunks={stats.get('chunks_count')} | images={stats.get('images_count')} | ms={stats.get('retrieval_time_ms')}"
+                        )
+                    else:
+                        response_placeholder.error("Failed to get response from API.")
+
+    with col_context:
+        st.subheader("Retrieved Context")
+        render_retrieved_context(st.session_state.retrieved_items)
+        render_sources(st.session_state.retrieved_items)
+        render_image_panel(st.session_state.retrieved_items)
+
+        if st.session_state.last_query_stats:
+            st.subheader("Retrieval Stats")
+            st.json(st.session_state.last_query_stats)
+
+    st.divider()
+    render_debug_tabs(
+        st.session_state.retrieved_items,
+        st.session_state.last_query_stats,
+        st.session_state.debug_events
+    )
 
     # Auto-refresh if any files are processing
     has_processing = any(f.get("status") == "processing" for f in st.session_state.uploaded_files)
     if has_processing:
-        time.sleep(2)  # Wait 2 seconds before refreshing
-        st.rerun()
+        st.autorefresh(interval=2000, key="ingest_refresh")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,9 @@ Converts PDF pages to raw text with memory-efficient streaming.
 import pypdf
 from typing import List, Dict
 import io
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def extract_text_from_pdf(pdf_path: str = None, pdf_bytes: bytes = None) -> List[Dict[str, any]]:
@@ -32,13 +35,14 @@ def extract_text_from_pdf(pdf_path: str = None, pdf_bytes: bytes = None) -> List
         
         for page_num, page in enumerate(reader.pages, start=1):
             try:
-                text = page.extract_text()
+                text = page.extract_text() or ""
                 pages_data.append({
                     "page": page_num,
                     "text": text
                 })
             except Exception as e:
                 # Skip pages that can't be extracted
+                logger.warning("Error extracting text for page %s: %s", page_num, e)
                 pages_data.append({
                     "page": page_num,
                     "text": f"[Error extracting page {page_num}: {str(e)}]"
@@ -73,12 +77,13 @@ def stream_text_pages(pdf_path: str = None, pdf_bytes: bytes = None):
         
         for page_num, page in enumerate(reader.pages, start=1):
             try:
-                text = page.extract_text()
+                text = page.extract_text() or ""
                 yield {
                     "page": page_num,
                     "text": text
                 }
             except Exception as e:
+                logger.warning("Error extracting text for page %s: %s", page_num, e)
                 yield {
                     "page": page_num,
                     "text": f"[Error extracting page {page_num}: {str(e)}]"

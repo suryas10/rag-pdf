@@ -33,41 +33,23 @@ pip install -r requirements.txt
 
 ```
 
-### 3. Optional (spaCy Transformer Model)
-#### Download separately to avoid pip model fetching issues:
-
-```
-
-pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.7.3/en_core_web_trf-3.7.3-py3-none-any.whl
-
-```
-
-### 4. Install Additional Dependencies
-
-For PDF to image conversion, you may need system dependencies:
-
-**Windows**: Install poppler from [here](https://github.com/oschwartz10612/poppler-windows/releases/tag/v24.07.0-0)
-1. Click on `Release-24.07.0-0.zip`
-2. Unzip and Move the folder `poppler-24.07.0` to `C:\Program Files\`
-4. Add path `C:\Program Files\poppler-24.07.0\Library\bin` to the Environment Variable
-
-### 5. Set Environment Variables
+### 3. Set Environment Variables
 
 Set your Grok API key:
 
 ```bash
 # Windows PowerShell
-$env:GROK_API_KEY="your-api-key-here"
+$env:GROQ_API_KEY="your-api-key-here"
 
 ```
 
 Or create a `.env` file (not included in repo):
 
 ```
-GROK_API_KEY=your-api-key-here
+GROQ_API_KEY=your-api-key-here
 ```
 
-### 6. Configure Settings
+### 4. Configure Settings
 
 Edit `config.yaml` to adjust:
 - Embedding models and batch sizes
@@ -126,7 +108,11 @@ Body: {
   "query": "Your question",
   "file_id": "optional-file-id",
   "use_coref": true,
-  "use_intent": true
+  "use_intent": true,
+  "use_history": true,
+  "use_multimodal": false,
+  "image_query_base64": null,
+  "top_k": 5
 }
 Response: {
   "response": "AI response",
@@ -134,6 +120,20 @@ Response: {
   "intent": "qa",
   "resolved_query": "..."
 }
+```
+
+### Stream Query
+```
+POST /query/stream
+Content-Type: application/json
+Body: same as /query
+Response: NDJSON stream with token events and a final summary event
+```
+
+### Clear Index
+```
+POST /index/clear
+Response: { "status": "cleared" }
 ```
 
 ### Coreference Resolution
@@ -192,7 +192,6 @@ Key settings in `config.yaml`:
 ## Notes
 
 - The system uses local Qdrant storage (no external database needed)
-- Coreference resolution model downloads on first use (~1.5GB)
 - Text embeddings use matryoshka dimension reduction (512 dim)
 - Supports both text and image-based retrieval
 - Conversation history is maintained in session state
@@ -209,19 +208,10 @@ Key settings in `config.yaml`:
 ## Validate setup
 ```
 pip check
-python -m spacy validate
 python - <<'PY'
-import torch, spacy
+import torch
 print("✅ CUDA available:", torch.cuda.is_available(), "CUDA version:", torch.version.cuda)
-print("spaCy model loaded:", spacy.load("en_core_web_trf"))
 PY
-````
-
-## Expected ✅:
-```
-No broken requirements found.
-✔ Pipeline 'en_core_web_trf' is compatible with spaCy v3.7.4
-✅ CUDA available: True CUDA version: 13.0
 ```
 
 ## License
