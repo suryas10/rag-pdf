@@ -1,222 +1,221 @@
-# RAG PDF System
+# WiM RAG PDF System
 
-A complete Retrieval-Augmented Generation (RAG) system for PDF documents with text and image embedding support.
+An end-to-end Retrieval-Augmented Generation (RAG) system for PDF understanding with:
 
-## Features
+- text extraction and semantic chunking
+- embedded image extraction and image embeddings
+- local Qdrant vector database
+- streaming chat responses over FastAPI
+- persistent chat sessions (SQLite)
+- two UIs: React frontend and Streamlit control panel
 
-- 📄 **PDF Text Extraction**: Extract and process text from PDF documents
-- 🖼️ **Image Extraction**: Extract images from PDF pages for vision-based retrieval
-- 🧠 **Nomic Embeddings**: Text embeddings using `nomic-embed-text-v1.5` and vision embeddings using `nomic-embed-vision-v1.5`
-- 🗄️ **Qdrant Vector Store**: Local persistent vector database for storing embeddings
-- 🔍 **Hybrid Retrieval**: Context-aware retrieval with coreference resolution and intent classification
-- 🤖 **Grok LLM**: Generate responses using Grok Reasoner model
-- 💬 **Streamlit UI**: User-friendly interface for uploading PDFs and chatting with documents
+## Architecture Overview
+
+1. Upload PDF
+2. Ingestion pipeline extracts text + images
+3. Text and image embeddings are generated
+4. Vectors are stored in Qdrant with metadata
+5. Query retrieval returns relevant text/image context
+6. LLM generates grounded response with sources
+
+Core backend entrypoint: `fastapi_server.py`
+
+## Main Features
+
+- PDF text extraction with page metadata
+- PDF image extraction using PyMuPDF
+- Nomic text and vision embedding support
+- Hybrid retrieval pipeline with reranking hooks
+- Query streaming endpoint (`/chat/query/stream`, NDJSON)
+- Multi-session chat management APIs
+- Local LLM or cloud LLM provider mode (configurable)
+
+## Project Layout
+
+```text
+rag-pdf/
+  fastapi_server.py            # FastAPI server and API routes
+  config.yaml                  # Runtime configuration
+  app.py                       # Streamlit app
+  frontend/                    # React + Vite frontend
+  backend/
+    ingestion/                 # text/image extraction + chunking
+    embeddings/                # text/vision embedders
+    vectorstore/               # qdrant + retriever + reranker
+    coref_intent/              # coref + intent classifiers
+    llm/                       # LLM inference wrapper
+    memory/                    # conversation memory
+    session_store.py           # SQLite chat persistence
+  ui/                          # Streamlit UI components/client
+  scripts/start_demo.ps1       # one-click demo launcher
+```
+
+## Prerequisites
+
+- Python 3.11.x
+- Node.js 18+ (for React frontend)
+- Optional NVIDIA GPU with CUDA-compatible torch build
+- Optional local llama.cpp server binary/model (if using `llm.provider: local`)
 
 ## Setup
 
-### 1. Activate Virtual Environment
+### 1) Python environment
 
-```bash
+```powershell
 cd rag-pdf
-# On Windows
+python -m venv venv
 venv\Scripts\activate
-# On Linux/Mac
-source venv/bin/activate
-```
-
-### 2. Install Dependencies
-
-```bash
 python -m pip install --upgrade pip setuptools wheel
-
-pip install -r requirements.txt
-
+pip install -r requirements_fixed.txt
 ```
 
-### 3. Set Environment Variables
+### 2) Frontend dependencies
 
-Set your Grok API key:
+```powershell
+cd frontend
+npm install
+cd ..
+```
 
-```bash
-# Windows PowerShell
+### 3) Environment variables
+
+If using cloud provider mode, set:
+
+```powershell
 $env:GROQ_API_KEY="your-api-key-here"
-
 ```
 
-Or create a `.env` file (not included in repo):
+Or create `.env`:
 
-```
+```env
 GROQ_API_KEY=your-api-key-here
+API_BASE_URL=http://localhost:8000
 ```
 
-### 4. Configure Settings
+### 4) Configure runtime
 
-Edit `config.yaml` to adjust:
-- Embedding models and batch sizes
-- Chunk sizes and overlaps
-- Vector store settings
-- LLM parameters
+Edit `config.yaml`:
 
-## Usage
+- `llm.provider`: `local` or `groq`
+- `embedding` chunk + vector settings
+- `retrieval` top-k and thresholds
+- `vectorstore.path` for local persistence
 
-### Start the FastAPI Backend
+## Run Options
 
-```bash
+### Option A: FastAPI + React (recommended app UI)
+
+Terminal 1:
+
+```powershell
+cd rag-pdf
+venv\Scripts\activate
 python fastapi_server.py
 ```
 
-The server will start on `http://localhost:8000` by default.
+Terminal 2:
 
-### Start the Streamlit UI
+```powershell
+cd rag-pdf\frontend
+npm run dev
+```
 
-In a new terminal (with venv activated):
+### Option B: FastAPI + Streamlit (control/debug UI)
 
-```bash
+Terminal 1:
+
+```powershell
+cd rag-pdf
+venv\Scripts\activate
+python fastapi_server.py
+```
+
+Terminal 2:
+
+```powershell
+cd rag-pdf
+venv\Scripts\activate
 streamlit run app.py
 ```
 
-The UI will open in your browser at `http://localhost:8501`.
+### Option C: One-click demo script (Windows)
 
-### Workflow
-
-1. **Upload PDF**: Use the sidebar to upload a PDF file
-2. **Wait for Ingestion**: The system will extract text/images, generate embeddings, and store them in Qdrant
-3. **Chat**: Ask questions about your document in the chat interface
-4. **View Sources**: See which parts of the document were used to answer your question
-
-## API Endpoints
-
-### Upload File
-```
-POST /upload
-Content-Type: multipart/form-data
-Body: PDF file
-Response: { "job_id": "...", "filename": "...", "status": "processing" }
+```powershell
+cd rag-pdf
+powershell -ExecutionPolicy Bypass -File .\scripts\start_demo.ps1
 ```
 
-### Check Ingestion Status
-```
-GET /ingestion/status/{job_id}
-Response: { "status": "...", "progress": 0.0-1.0, "message": "..." }
-```
+## API Summary
 
-### Query Documents
-```
-POST /query
-Content-Type: application/json
-Body: {
-  "query": "Your question",
-  "file_id": "optional-file-id",
-  "use_coref": true,
-  "use_intent": true,
-  "use_history": true,
-  "use_multimodal": false,
-  "image_query_base64": null,
-  "top_k": 5
-}
-Response: {
-  "response": "AI response",
-  "sources": [...],
-  "intent": "qa",
-  "resolved_query": "..."
-}
-```
+### Health
 
-### Stream Query
-```
-POST /query/stream
-Content-Type: application/json
-Body: same as /query
-Response: NDJSON stream with token events and a final summary event
-```
+- `GET /health`
 
-### Clear Index
-```
-POST /index/clear
-Response: { "status": "cleared" }
-```
+### Upload + ingestion
 
-### Coreference Resolution
-```
-POST /coref
-Content-Type: application/json
-Body: {
-  "text": "Text with pronouns",
-  "context": "Optional context"
-}
-Response: { "resolved_text": "..." }
-```
+- `POST /upload`
+- `POST /document/upload`
+- `GET /ingestion/status/{job_id}`
 
-### Health Check
-```
-GET /health
-Response: { "status": "healthy", "components": {...} }
-```
+### Query
 
-## Project Structure
+- `POST /query`
+- `POST /query/stream`
+- `POST /chat/query`
+- `POST /chat/query/stream`
 
-```
-rag-pdf/
-├── app.py                      # Streamlit UI
-├── fastapi_server.py           # FastAPI backend
-├── config.yaml                 # Configuration
-├── requirements.txt            # Dependencies
-├── backend/
-│   ├── ingestion/
-│   │   ├── text_extractor.py      # PDF text extraction
-│   │   ├── image_extractor.py     # PDF image extraction
-│   │   └── cleaner_chunker.py     # Text cleaning and chunking
-│   ├── embeddings/
-│   │   ├── nomic_text_embed.py    # Text embeddings
-│   │   └── nomic_vision_embed.py  # Image embeddings
-│   ├── vectorstore/
-│   │   ├── qdrant_client.py       # Qdrant operations
-│   │   └── retriever.py           # Hybrid retrieval
-│   ├── coref_intent/
-│   │   ├── coref_resolver.py      # Coreference resolution
-│   │   └── intent_classifier.py   # Intent classification
-│   └── llm/
-│       └── Grok_inference.py  # Grok LLM integration
-└── qdrant_local/              # Qdrant data (created automatically)
-```
+### Session management
 
-## Configuration
+- `POST /chat/create`
+- `POST /chat/delete`
+- `GET /chat/history?chat_id=...`
+- `GET /chat/sessions`
 
-Key settings in `config.yaml`:
+### Reset/maintenance
 
-- **embedding**: Model names, batch sizes, chunk parameters
-- **vectorstore**: Collection name, path, vector dimensions
-- **llm**: Model, temperature, max tokens
-- **retrieval**: Top-k results, similarity threshold
+- `POST /index/clear`
+- `POST /reset`
+- `POST /db/clear`
+- `POST /conversation/clear`
+
+### Utility
+
+- `POST /coref`
+
+## Typical Workflow
+
+1. Create/select a chat session
+2. Upload PDF
+3. Poll ingestion until completed
+4. Ask questions
+5. Receive streaming answer + source chunks
+6. Continue multi-turn conversation with persisted history
 
 ## Notes
 
-- The system uses local Qdrant storage (no external database needed)
-- Text embeddings use matryoshka dimension reduction (512 dim)
-- Supports both text and image-based retrieval
-- Conversation history is maintained in session state
+- Vectors are stored locally in `qdrant_local/`
+- Extracted images are stored in `data/images/`
+- Chat metadata/history is stored in `data/chat_sessions.db`
+- `.gitignore` excludes generated runtime artifacts and frontend dependencies
 
 ## Troubleshooting
 
-1. **API Connection Error**: Ensure FastAPI server is running
-2. **Model Download Issues**: Check internet connection for model downloads
-3. **Poppler Not Found**: Install poppler-utils for PDF image extraction
-4. **Out of Memory**: Reduce batch sizes in config.yaml
-5. **Grok API Error**: Verify API key is set correctly
+1. API offline: confirm `python fastapi_server.py` is running.
+2. Frontend can't connect: check `VITE_API_BASE_URL` and CORS.
+3. No GPU: system falls back to CPU; reduce batch sizes if needed.
+4. LLM errors: verify provider settings in `config.yaml` and API key.
+5. Upload stuck: inspect `/ingestion/status/{job_id}` and backend logs.
 
+## Validation
 
-## Validate setup
-```
+```powershell
 pip check
-python - <<'PY'
-import torch
-print("✅ CUDA available:", torch.cuda.is_available(), "CUDA version:", torch.version.cuda)
-PY
+python cuda_check.py
 ```
 
 ## License
 
-This project is provided as-is for educational and development purposes.
+Provided as-is for academic and development use.
 
 
 

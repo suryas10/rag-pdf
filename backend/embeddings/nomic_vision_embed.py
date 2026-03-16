@@ -19,7 +19,8 @@ class NomicVisionEmbedder:
         self,
         model_name: str = "nomic-ai/nomic-embed-vision-v1.5",
         batch_size: int = 8,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        matryoshka_dim: int = 512
     ):
         """
         Initialize Nomic vision embedder.
@@ -28,9 +29,11 @@ class NomicVisionEmbedder:
             model_name: HuggingFace model identifier
             batch_size: Batch size for processing (smaller for images)
             device: Device to use ('cuda', 'cpu', or None for auto)
+            matryoshka_dim: Target embedding dimension (Matryoshka reduction)
         """
         self.model_name = model_name
         self.batch_size = batch_size
+        self.matryoshka_dim = matryoshka_dim
         
         # Auto-detect device
         if device is None:
@@ -95,8 +98,12 @@ class NomicVisionEmbedder:
                 )
 
             img_embeddings = img_embeddings.float()
+
+            # Matryoshka dimension reduction (match text embedder's 512D)
+            if self.matryoshka_dim and img_embeddings.shape[1] > self.matryoshka_dim:
+                img_embeddings = img_embeddings[:, :self.matryoshka_dim]
             
-            # L2 normalize
+            # L2 normalize (must re-normalize after dimension reduction)
             img_embeddings = F.normalize(img_embeddings, p=2, dim=1)
             
             all_embeddings.append(img_embeddings.cpu())

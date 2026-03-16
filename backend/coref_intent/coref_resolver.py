@@ -1,95 +1,56 @@
 """
-Coreference resolution using Hugging Face's LingMessCoref model.
-Replaces spaCy-coref/coreferee dependency for improved compatibility.
+Lightweight coreference resolution via pronoun detection.
+Replaces the heavy biu-nlp/lingmess-coref model (which was a non-functional stub)
+with a simple pronoun detector that flags queries for LLM-based rewriting.
 """
 
-from transformers import AutoTokenizer, AutoModelForTokenClassification
 from typing import List, Optional
-import torch
 import logging
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class CorefResolver:
-    """Resolve coreferences using biu-nlp/lingmess-coref."""
+    """Lightweight coreference resolver using pronoun detection.
+    
+    Instead of loading a 400MB model that wasn't functional,
+    this detects pronouns/references and flags them for
+    the LLM query rewriter to handle.
+    """
 
-    def __init__(
-        self,
-        model_name: str = "biu-nlp/lingmess-coref",
-        device: Optional[str] = None
-    ):
-        """
-        Initialize LingMessCoref coreference resolver.
+    # Common pronouns and referential words
+    REFERENTIAL_WORDS = {
+        "he", "she", "it", "they", "him", "her", "them",
+        "his", "its", "their", "this", "that", "these", "those",
+        "the same", "such", "former", "latter"
+    }
 
-        Args:
-            model_name: The Hugging Face model name.
-            device: 'cuda' or 'cpu'. Auto-detects if not set.
-        """
-        self.model_name = model_name
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-        logger.info(f"🔍 Initializing LingMessCoref ({self.model_name}) on {self.device}...")
-
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-            self.model = AutoModelForTokenClassification.from_pretrained(model_name, trust_remote_code=True).to(self.device)
-            logger.info("✅ LingMessCoref initialized successfully.")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize LingMessCoref: {e}")
-            self.model = None
-            self.tokenizer = None
+    def __init__(self, model_name: str = None, device: Optional[str] = None):
+        """Initialize lightweight coref resolver (no model loading needed)."""
+        self.enabled = True
+        logger.info("✅ Lightweight CorefResolver initialized (pronoun detection mode)")
 
     def resolve(self, query: str, context: str = "") -> str:
         """
-        Resolve coreferences in a query with optional context.
-
+        Check if query contains referential pronouns.
+        
+        Returns the original query — actual resolution is handled
+        by the LLM query_rewriter which has conversation context.
+        
         Args:
             query: The input text possibly containing pronouns.
             context: Optional previous text context.
 
         Returns:
-            The resolved text with pronouns replaced (placeholder for now).
+            The original query (resolution is deferred to LLM rewriter).
         """
-        if not self.model or not self.tokenizer:
-            logger.warning("⚠️ Coref model not initialized. Returning original text.")
-            return query
+        return query
 
-        text = f"{context}\n{query}" if context else query
-        try:
-            inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-
-            # NOTE: LingMessCoref produces token classification logits, not directly resolved text.
-            # For now, return the original query until decoding logic is added.
-            # (You can extend this later to map clusters → replacements.)
-            logger.info("ℹ️ Coref model executed successfully, returning original text for now.")
-            return query
-
-        except Exception as e:
-            logger.error(f"❌ Coref resolution failed: {e}")
-            return query
+    def has_references(self, query: str) -> bool:
+        """Check if query contains pronouns or referential language."""
+        words = set(query.lower().split())
+        return bool(words & self.REFERENTIAL_WORDS)
 
     def resolve_batch(self, queries: List[str], contexts: Optional[List[str]] = None) -> List[str]:
-        """
-        Resolve coreferences for multiple queries.
-
-        Args:
-            queries: List of user inputs.
-            contexts: List of context strings (optional).
-
-        Returns:
-            List of resolved strings.
-        """
-        if contexts is None:
-            contexts = [""] * len(queries)
-        return [self.resolve(q, c) for q, c in zip(queries, contexts)]
-
-
-if __name__ == "__main__":
-    resolver = CorefResolver()
-    text = "Alice met Bob. She told him about the project."
-    print("Before:", text)
-    print("After:", resolver.resolve(text))
+        """Resolve coreferences for multiple queries."""
+        return queries  # Pass through — LLM rewriter handles resolution

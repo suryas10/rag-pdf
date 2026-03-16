@@ -74,9 +74,6 @@ class NomicTextEmbedder:
             with torch.no_grad():
                 embeddings = self.model.encode(batch_prefixed, convert_to_tensor=True)
 
-            # Normalize per layer
-            embeddings = F.layer_norm(embeddings, normalized_shape=(embeddings.shape[1],))
-
             # Matryoshka dimension reduction (safe slice/pad)
             if embeddings.shape[1] >= self.matryoshka_dim:
                 embeddings = embeddings[:, :self.matryoshka_dim]

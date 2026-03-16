@@ -69,23 +69,43 @@ class TextCleaner:
 
 
 class Chunker:
-    """Creates overlapping semantic chunks from cleaned text."""
+    """Creates overlapping semantic chunks from cleaned text.
+    
+    Supports cross-page chunking: concatenates full document text
+    before chunking, then maps chunks back to page ranges.
+    """
     
     def __init__(
         self,
-        chunk_size: int = 500,
-        chunk_overlap: int = 50,
-        min_chunk_size: int = 500,
-        max_chunk_size: int = 800
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        min_chunk_size: int = 100,
+        max_chunk_size: int = 1200
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.min_chunk_size = min_chunk_size
         self.max_chunk_size = max_chunk_size
+        self._tokenizer = None
     
-    def _estimate_tokens(self, text: str) -> int:
-        """Rough token estimation (4 chars ≈ 1 token)."""
-        return len(text) // 4
+    def _get_tokenizer(self):
+        """Lazy-load tokenizer for accurate token counting."""
+        if self._tokenizer is None:
+            try:
+                from transformers import AutoTokenizer
+                self._tokenizer = AutoTokenizer.from_pretrained(
+                    "bert-base-uncased", use_fast=True
+                )
+            except Exception:
+                self._tokenizer = "fallback"
+        return self._tokenizer
+    
+    def _count_tokens(self, text: str) -> int:
+        """Count tokens using real tokenizer (falls back to char heuristic)."""
+        tokenizer = self._get_tokenizer()
+        if tokenizer == "fallback":
+            return len(text) // 4  # Fallback: ~4 chars per token
+        return len(tokenizer.encode(text, add_special_tokens=False))
     
     def _split_text(self, text: str) -> List[str]:
         """Split text into sentences for better chunking."""
@@ -132,8 +152,7 @@ class Chunker:
         max_size = self.max_chunk_size or target_size
 
         for sentence in sentences:
-            sentence_length = len(sentence)
-            sentence_tokens = self._estimate_tokens(sentence)
+            sentence_tokens = self._count_tokens(sentence)
             
             # If adding this sentence would exceed max size, save current chunk
             if current_length + sentence_tokens > max_size and current_chunk:
@@ -157,7 +176,7 @@ class Chunker:
                     overlap_tokens = 0
                     overlap_sentences = []
                     for s in reversed(current_chunk):
-                        s_tokens = self._estimate_tokens(s)
+                        s_tokens = self._count_tokens(s)
                         if overlap_tokens + s_tokens <= self.chunk_overlap:
                             overlap_sentences.insert(0, s)
                             overlap_tokens += s_tokens
@@ -220,6 +239,137 @@ class Chunker:
             all_chunks.extend(chunks)
         
         return all_chunks
+    
+    def chunk_document(
+        self,
+        pages: List[Dict],
+        chunk_prefix: str = ""
+    ) -> List[Chunk]:
+        """
+        Cross-page chunking: concatenates all pages then chunks the full document.
+        Each chunk records which pages it spans.
+        
+        Args:
+            pages: List of page dicts with "page" and "text" keys
+            chunk_prefix: Prefix for chunk IDs
+        
+        Returns:
+            List of Chunk objects with page range metadata
+        """
+        if not pages:
+            return []
+        
+        # Build full document text with page boundary tracking
+        full_text = ""
+        page_boundaries = []  # (start_char, end_char, page_no)
+        for p in pages:
+            start = len(full_text)
+            page_text = TextCleaner.clean_text(p["text"])
+            if page_text:
+                full_text += page_text + " "
+            page_boundaries.append((start, len(full_text), p["page"]))
+        
+        full_text = full_text.strip()
+        if not full_text:
+            return []
+        
+        # Split into sentences
+        sentences = self._split_text(full_text)
+        if not sentences:
+            return []
+        
+        # Chunk the full document text
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        chunk_idx = 0
+        char_pos = 0  # Track character position in full_text
+        
+        for sentence in sentences:
+            sentence_tokens = self._count_tokens(sentence)
+            
+            if current_length + sentence_tokens > self.max_chunk_size and current_chunk:
+                chunk_text = ' '.join(current_chunk)
+                chunk_end_pos = char_pos
+                
+                if self._count_tokens(chunk_text) >= self.min_chunk_size:
+                    # Map character range back to page range
+                    start_page, end_page = self._find_page_range(
+                        chunk_end_pos - len(chunk_text), chunk_end_pos, page_boundaries
+                    )
+                    chunk_id = f"{chunk_prefix}chunk_{chunk_idx}"
+                    chunks.append(Chunk(
+                        text=chunk_text,
+                        page_no=start_page,
+                        chunk_id=chunk_id,
+                        start_offset=chunk_end_pos - len(chunk_text),
+                        end_offset=chunk_end_pos,
+                        metadata={
+                            "start_page": start_page,
+                            "end_page": end_page,
+                            "token_count": self._count_tokens(chunk_text)
+                        }
+                    ))
+                    chunk_idx += 1
+                
+                # Overlap: keep last N sentences
+                if self.chunk_overlap > 0 and current_chunk:
+                    overlap_tokens = 0
+                    overlap_sentences = []
+                    for s in reversed(current_chunk):
+                        s_tokens = self._count_tokens(s)
+                        if overlap_tokens + s_tokens <= self.chunk_overlap:
+                            overlap_sentences.insert(0, s)
+                            overlap_tokens += s_tokens
+                        else:
+                            break
+                    current_chunk = overlap_sentences
+                    current_length = overlap_tokens
+                else:
+                    current_chunk = []
+                    current_length = 0
+            
+            current_chunk.append(sentence)
+            current_length += sentence_tokens
+            char_pos += len(sentence) + 1  # +1 for space
+        
+        # Final chunk
+        if current_chunk:
+            chunk_text = ' '.join(current_chunk)
+            if self._count_tokens(chunk_text) >= self.min_chunk_size // 2:
+                start_page, end_page = self._find_page_range(
+                    char_pos - len(chunk_text), char_pos, page_boundaries
+                )
+                chunk_id = f"{chunk_prefix}chunk_{chunk_idx}"
+                chunks.append(Chunk(
+                    text=chunk_text,
+                    page_no=start_page,
+                    chunk_id=chunk_id,
+                    start_offset=char_pos - len(chunk_text),
+                    end_offset=char_pos,
+                    metadata={
+                        "start_page": start_page,
+                        "end_page": end_page,
+                        "token_count": self._count_tokens(chunk_text)
+                    }
+                ))
+        
+        return chunks
+    
+    @staticmethod
+    def _find_page_range(
+        start_char: int, end_char: int,
+        page_boundaries: List[tuple]
+    ) -> tuple:
+        """Map a character range back to page numbers."""
+        start_page = page_boundaries[0][2]  # Default to first page
+        end_page = page_boundaries[-1][2]   # Default to last page
+        for pb_start, pb_end, page_no in page_boundaries:
+            if pb_start <= start_char < pb_end:
+                start_page = page_no
+            if pb_start < end_char <= pb_end:
+                end_page = page_no
+        return start_page, end_page
 
 
 def apply_redaction(text: str, redaction_patterns: List[str]) -> str:

@@ -9,9 +9,9 @@ embedding:
   vision_model: "nomic-ai/nomic-embed-vision-v1.5"
   batch_size: 64
   matryoshka_dim: 512
-  chunk_size: 500
+  chunk_size: 1000          # tokens (was 500 chars)
   vector_size: 512
-  overlap: 50
+  overlap: 200              # tokens (was 50 chars)
 
 vectorstore:
   type: qdrant
@@ -21,21 +21,20 @@ vectorstore:
   parallel_upserts: true
   vector_size: 512
 
-
 llm:
-  provider: groq
-  model: "llama-3.3-70b-versatile"  # Options: llama-3.1-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768, gemma2-9b-it
-  base_url: "https://api.groq.com/openai/v1"
+  provider: local            # "local" or "groq"
+  local:
+    base_url: "http://localhost:8080/v1"
+    model: "llama-3.1-8b"
+  groq:
+    base_url: "https://api.groq.com/openai/v1"
+    model: "llama-3.3-70b-versatile"
+    api_key: null            # Set via GROQ_API_KEY env var
   temperature: 0.2
   max_tokens: 800
-  api_key: null  # Set via environment variable GROQ_API_KEY
 
 coref:
-  enabled: true
-  spacy_model: "en_core_web_trf"
-  fallback_model: "en_core_web_sm"
-  coref_component: "coref"
-  use_gpu: true
+  enabled: true              # Lightweight pronoun detection (no model loaded)
 
 intent:
   enabled: true
@@ -45,9 +44,9 @@ intent:
 ingestion:
   image_format: "jpg"
   image_dpi: 300
-  max_chunk_size: 800
-  min_chunk_size: 500
-  chunk_overlap: 50
+  max_chunk_size: 1200       # tokens
+  min_chunk_size: 100        # tokens
+  chunk_overlap: 200         # tokens
 
 retrieval:
   top_k: 5
@@ -55,6 +54,9 @@ retrieval:
   max_history_turns: 10
   summary_after: 8
   max_context_chars: 12000
+  use_bm25: true
+  use_reranker: true
+  reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 server:
   host: "0.0.0.0"
@@ -63,4 +65,3 @@ server:
 
 streamlit:
   port: 8501
-

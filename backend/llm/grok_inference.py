@@ -1,6 +1,6 @@
 """
-Groq LLM inference for generating responses with retrieved context.
-Supports streaming responses.
+LLM inference for generating responses with retrieved context.
+Supports both local (llama.cpp) and cloud (Groq) providers via OpenAI-compatible API.
 """
 
 from dotenv import load_dotenv
@@ -12,7 +12,7 @@ import os
 
 
 class GroqInference:
-    """Generate responses using Groq LLM with retrieved context."""
+    """Generate responses using a local or cloud LLM with retrieved context."""
     
     def __init__(
         self,
@@ -20,16 +20,25 @@ class GroqInference:
         base_url: str = "https://api.groq.com/openai/v1",
         model: str = "llama-3.1-70b-versatile",
         temperature: float = 0.2,
-        max_tokens: int = 800
+        max_tokens: int = 800,
+        provider: str = "groq"
     ):
-        self.api_key = api_key or os.getenv("GROQ_API_KEY")
-        if not self.api_key:
-            raise ValueError("Groq API key must be provided or set in GROQ_API_KEY environment variable")
-        
-        self.base_url = base_url
+        self.provider = provider
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+
+        if provider == "local":
+            # Local LLM (llama.cpp) — no API key needed
+            self.api_key = api_key or "not-needed"
+            self.base_url = base_url or "http://localhost:8080/v1"
+        else:
+            # Cloud LLM (Groq)
+            self.api_key = api_key or os.getenv("GROQ_API_KEY")
+            if not self.api_key:
+                raise ValueError("Groq API key must be provided or set in GROQ_API_KEY environment variable")
+            self.base_url = base_url
+
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url

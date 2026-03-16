@@ -24,6 +24,7 @@ import base64
 import json
 from io import BytesIO
 from PIL import Image
+import shutil
 
 # Backend imports
 from backend.ingestion.text_extractor import extract_text_from_pdf
@@ -33,7 +34,10 @@ from backend.embeddings.nomic_text_embed import NomicTextEmbedder
 from backend.embeddings.nomic_vision_embed import NomicVisionEmbedder
 from backend.vectorstore.qdrant_client import QdrantVectorStore
 from backend.vectorstore.retriever import HybridRetriever
+from backend.vectorstore.bm25_index import BM25Index
+from backend.vectorstore.reranker import ChunkReranker
 from backend.memory.conversation_memory import ConversationMemory
+from backend.session_store import SessionStore
 from backend.coref_intent.coref_resolver import CorefResolver
 from backend.coref_intent.intent_classifier import IntentClassifier
 from backend.llm.grok_inference import GroqInference
@@ -59,6 +63,9 @@ text_embedder = None
 vision_embedder = None
 retriever = None
 llm = None
+bm25_index = None
+chunk_reranker = None
+session_store = None
 ingestion_jobs = {}
 cancelled_jobs = set()
 
@@ -123,7 +130,7 @@ def load_config():
 
 def initialize_components():
     """Initialize all backend components"""
-    global vector_store, text_embedder, vision_embedder, retriever, llm
+    global vector_store, text_embedder, vision_embedder, retriever, llm, bm25_index, chunk_reranker, session_store
     
     logger.info("Initializing components...")
     
@@ -148,23 +155,39 @@ def initialize_components():
     
     vision_embedder = NomicVisionEmbedder(
         model_name=embed_config.get("vision_model", "nomic-ai/nomic-embed-vision-v1.5"),
-        batch_size=8
+        batch_size=8,
+        matryoshka_dim=embed_config.get("matryoshka_dim", 512)
     )
     
     # Initialize coref and intent
     coref_resolver = CorefResolver()
     intent_classifier = IntentClassifier()
-    
-    # Initialize retriever
+
+    # Initialize BM25 index
     retr_config = config.get("retrieval", {})
+    bm25_index = BM25Index() if retr_config.get("use_bm25", True) else None
+
+    # Initialize cross-encoder reranker
+    chunk_reranker = None
+    if retr_config.get("use_reranker", True):
+        try:
+            chunk_reranker = ChunkReranker(
+                model_name=retr_config.get("reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+            )
+        except Exception as e:
+            logger.error("Reranker initialization failed: %s", e)
+    
+    # Initialize retriever with BM25 + reranker
     retriever = HybridRetriever(
         vector_store=vector_store,
         text_embedder=text_embedder,
         vision_embedder=vision_embedder,
         coref_resolver=coref_resolver,
         intent_classifier=intent_classifier,
-        top_k=retr_config.get("top_k", 3),
-        similarity_threshold=retr_config.get("similarity_threshold", 0.7),
+        bm25_index=bm25_index,
+        reranker=chunk_reranker,
+        top_k=retr_config.get("top_k", 5),
+        similarity_threshold=retr_config.get("similarity_threshold", 0.5),
         memory=ConversationMemory(
             max_turns=retr_config.get("max_history_turns", 10),
             summarize_after=retr_config.get("summary_after", 8)
@@ -172,26 +195,45 @@ def initialize_components():
         max_context_chars=retr_config.get("max_context_chars", 12000)
     )
     
-    # Initialize LLM
+    # Initialize LLM (local or cloud)
     llm_config = config.get("llm", {})
+    provider = llm_config.get("provider", "groq")
     try:
-        llm = GroqInference(
-            api_key=os.getenv("GROQ_API_KEY") or os.getenv("GROK_API_KEY"),
-            base_url=llm_config.get("base_url", "https://api.groq.com/openai/v1"),
-            model=llm_config.get("model", "llama-3.1-70b-versatile"),
-            temperature=llm_config.get("temperature", 0.2),
-            max_tokens=llm_config.get("max_tokens", 800)
-        )
+        if provider == "local":
+            local_cfg = llm_config.get("local", {})
+            llm = GroqInference(
+                base_url=local_cfg.get("base_url", "http://localhost:8080/v1"),
+                model=local_cfg.get("model", "llama-3.1-8b"),
+                temperature=llm_config.get("temperature", 0.2),
+                max_tokens=llm_config.get("max_tokens", 800),
+                provider="local"
+            )
+            logger.info("✅ Local LLM initialized (llama.cpp at %s)", local_cfg.get("base_url"))
+        else:
+            groq_cfg = llm_config.get("groq", {})
+            llm = GroqInference(
+                api_key=os.getenv("GROQ_API_KEY") or os.getenv("GROK_API_KEY"),
+                base_url=groq_cfg.get("base_url", "https://api.groq.com/openai/v1"),
+                model=groq_cfg.get("model", "llama-3.3-70b-versatile"),
+                temperature=llm_config.get("temperature", 0.2),
+                max_tokens=llm_config.get("max_tokens", 800),
+                provider="groq"
+            )
+            logger.info("✅ Groq cloud LLM initialized")
         retriever.query_rewriter = lambda q, s: llm.rewrite_query(q, s)
         retriever.memory.summarizer = llm.summarize_history
     except Exception as e:
         llm = None
         logger.error("LLM initialization failed: %s", e)
     
-    logger.info("Components initialized successfully")
+    logger.info("✅ All components initialized successfully")
+    logger.info("   BM25: %s | Reranker: %s | LLM: %s",
+                "enabled" if bm25_index else "disabled",
+                "enabled" if chunk_reranker else "disabled",
+                provider if llm else "unavailable")
 
-    if not os.getenv("GROQ_API_KEY") and not os.getenv("GROK_API_KEY"):
-        logger.warning("GROQ_API_KEY is not set. LLM endpoints will be unavailable.")
+    # Initialize persistent session store
+    session_store = SessionStore()
 
 
 @app.on_event("startup")
@@ -203,6 +245,7 @@ async def startup_event():
 # Request/Response models
 class QueryRequest(BaseModel):
     query: str
+    chat_id: Optional[str] = None
     file_id: Optional[str] = None
     use_coref: bool = True
     use_intent: bool = True
@@ -240,13 +283,30 @@ class ClearConversationRequest(BaseModel):
     file_id: Optional[str] = None
 
 
+class ChatCreateResponse(BaseModel):
+    chat_id: str
+    created_at: str
+
+
+class ChatDeleteRequest(BaseModel):
+    chat_id: str
+
+
+class ChatSessionInfo(BaseModel):
+    chat_id: str
+    document_id: Optional[str] = None
+    document_name: Optional[str] = None
+    created_at: str
+
+
 async def process_ingestion(
     job_id: str,
     pdf_bytes: bytes,
     filename: str,
     chunk_size: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
-    include_images: bool = True
+    include_images: bool = True,
+    chat_id: Optional[str] = None
 ):
     """Background task to process PDF ingestion"""
     try:
@@ -265,6 +325,11 @@ async def process_ingestion(
         }
         
         file_id = hashlib.sha256(pdf_bytes).hexdigest()
+
+        if chat_id and session_store:
+            if not session_store.get_session(chat_id):
+                session_store.create_session(chat_id)
+            session_store.attach_document(chat_id, file_id, file_id, filename)
 
         # Deduplicate by file hash
         if vector_store:
@@ -428,7 +493,8 @@ async def upload_file(
     file: UploadFile = File(...),
     chunk_size: Optional[int] = Form(None),
     chunk_overlap: Optional[int] = Form(None),
-    include_images: bool = Form(True)
+    include_images: bool = Form(True),
+    chat_id: Optional[str] = Form(None)
 ):
     """Upload and process PDF file"""
     if not file.filename.endswith('.pdf'):
@@ -441,13 +507,40 @@ async def upload_file(
     job_id = str(uuid.uuid4())
     
     # Start background processing
-    background_tasks.add_task(process_ingestion, job_id, pdf_bytes, file.filename, chunk_size, chunk_overlap, include_images)
+    background_tasks.add_task(
+        process_ingestion,
+        job_id,
+        pdf_bytes,
+        file.filename,
+        chunk_size,
+        chunk_overlap,
+        include_images,
+        chat_id
+    )
     
     return {
         "job_id": job_id,
         "filename": file.filename,
-        "status": "processing"
+        "status": "processing",
+        "chat_id": chat_id
     }
+
+
+@app.post("/document/upload")
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    chat_id: Optional[str] = Form(None)
+):
+    """Upload and process PDF for a chat session."""
+    return await upload_file(
+        background_tasks=background_tasks,
+        file=file,
+        chunk_size=None,
+        chunk_overlap=None,
+        include_images=True,
+        chat_id=chat_id
+    )
 
 
 @app.get("/ingestion/status/{job_id}")
@@ -466,6 +559,20 @@ async def query(request: QueryRequest):
         raise HTTPException(status_code=500, detail="System not initialized")
     
     try:
+        # Resolve document by chat id when available
+        file_id = request.file_id
+        if request.chat_id and session_store:
+            session = session_store.get_session(request.chat_id)
+            if not session or not session.document_id:
+                raise HTTPException(status_code=400, detail="Chat session has no document uploaded")
+            file_id = session.document_id
+
+        # Persist user message
+        if request.chat_id and session_store:
+            if not session_store.get_session(request.chat_id):
+                session_store.create_session(request.chat_id)
+            session_store.add_message(request.chat_id, "user", request.query, sources=[])
+
         # Retrieve relevant chunks
         start_time = time.time()
         image_query = None
@@ -480,7 +587,7 @@ async def query(request: QueryRequest):
             query=request.query,
             use_coref=request.use_coref,
             use_intent=request.use_intent,
-            file_id=request.file_id,
+            file_id=file_id,
             use_multimodal=request.use_multimodal,
             image_query=image_query,
             top_k=request.top_k,
@@ -488,6 +595,13 @@ async def query(request: QueryRequest):
         )
         
         if not chunks:
+            if request.chat_id and session_store:
+                session_store.add_message(
+                    request.chat_id,
+                    "assistant",
+                    "No relevant context found for your query.",
+                    sources=[]
+                )
             return QueryResponse(
                 response="No relevant context found for your query.",
                 sources=[],
@@ -522,6 +636,14 @@ async def query(request: QueryRequest):
         if request.use_history:
             retriever.add_to_memory(request.query, response["response"], chunks)
 
+        if request.chat_id and session_store:
+            session_store.add_message(
+                request.chat_id,
+                "assistant",
+                response["response"],
+                sources=response.get("sources")
+            )
+
         elapsed_ms = int((time.time() - start_time) * 1000)
         
         return QueryResponse(
@@ -541,6 +663,11 @@ async def query(request: QueryRequest):
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
 
+@app.post("/chat/query", response_model=QueryResponse)
+async def chat_query(request: QueryRequest):
+    return await query(request)
+
+
 @app.post("/query/stream")
 async def query_stream(request: QueryRequest):
     """Stream query responses as NDJSON."""
@@ -549,6 +676,20 @@ async def query_stream(request: QueryRequest):
 
     async def streamer():
         start_time = time.time()
+        file_id = request.file_id
+        if request.chat_id and session_store:
+            session = session_store.get_session(request.chat_id)
+            if not session or not session.document_id:
+                yield (json.dumps({
+                    "type": "error",
+                    "message": "Chat session has no document uploaded"
+                }) + "\n").encode("utf-8")
+                return
+            file_id = session.document_id
+        if request.chat_id and session_store:
+            if not session_store.get_session(request.chat_id):
+                session_store.create_session(request.chat_id)
+            session_store.add_message(request.chat_id, "user", request.query, sources=[])
         image_query = None
         if request.image_query_base64:
             try:
@@ -562,7 +703,7 @@ async def query_stream(request: QueryRequest):
             query=request.query,
             use_coref=request.use_coref,
             use_intent=request.use_intent,
-            file_id=request.file_id,
+            file_id=file_id,
             use_multimodal=request.use_multimodal,
             image_query=image_query,
             top_k=request.top_k,
@@ -574,6 +715,13 @@ async def query_stream(request: QueryRequest):
                 "type": "token",
                 "data": "No relevant context found for your query."
             }) + "\n").encode("utf-8")
+            if request.chat_id and session_store:
+                session_store.add_message(
+                    request.chat_id,
+                    "assistant",
+                    "No relevant context found for your query.",
+                    sources=[]
+                )
             final_payload = {
                 "type": "final",
                 "resolved_query": resolved_query,
@@ -611,6 +759,14 @@ async def query_stream(request: QueryRequest):
         if request.use_history:
             retriever.add_to_memory(request.query, "".join(token_buffer), chunks)
 
+        if request.chat_id and session_store:
+            session_store.add_message(
+                request.chat_id,
+                "assistant",
+                "".join(token_buffer),
+                sources=response_stream.get("sources", [])
+            )
+
         elapsed_ms = int((time.time() - start_time) * 1000)
         final_payload = {
             "type": "final",
@@ -627,6 +783,71 @@ async def query_stream(request: QueryRequest):
         yield (json.dumps(final_payload) + "\n").encode("utf-8")
 
     return StreamingResponse(streamer(), media_type="application/x-ndjson")
+
+
+@app.post("/chat/query/stream")
+async def chat_query_stream(request: QueryRequest):
+    return await query_stream(request)
+
+
+@app.post("/chat/create", response_model=ChatCreateResponse)
+async def chat_create():
+    if not session_store:
+        raise HTTPException(status_code=500, detail="Session store not initialized")
+    chat_id = str(uuid.uuid4())
+    session = session_store.create_session(chat_id)
+    return ChatCreateResponse(chat_id=session.chat_id, created_at=session.created_at)
+
+
+@app.post("/chat/delete")
+async def chat_delete(request: ChatDeleteRequest):
+    if not session_store:
+        raise HTTPException(status_code=500, detail="Session store not initialized")
+
+    session = session_store.get_session(request.chat_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    # Delete vectors and stored images for the session document.
+    if session.document_id and vector_store:
+        try:
+            vector_store.delete_by_file_id(session.document_id)
+        except Exception as e:
+            logger.warning("Failed to delete vectors for chat %s: %s", request.chat_id, e)
+
+        images_dir = Path("data") / "images" / session.document_id
+        if images_dir.exists():
+            try:
+                shutil.rmtree(images_dir)
+            except Exception as e:
+                logger.warning("Failed to delete images for chat %s: %s", request.chat_id, e)
+
+    session_store.delete_session(request.chat_id)
+    return {"status": "deleted", "chat_id": request.chat_id}
+
+
+@app.get("/chat/history")
+async def chat_history(chat_id: str):
+    if not session_store:
+        raise HTTPException(status_code=500, detail="Session store not initialized")
+    history = session_store.get_history(chat_id)
+    return {"chat_id": chat_id, "messages": history}
+
+
+@app.get("/chat/sessions", response_model=List[ChatSessionInfo])
+async def list_chat_sessions():
+    if not session_store:
+        raise HTTPException(status_code=500, detail="Session store not initialized")
+    sessions = session_store.list_sessions()
+    return [
+        ChatSessionInfo(
+            chat_id=session.chat_id,
+            document_id=session.document_id,
+            document_name=session.document_name,
+            created_at=session.created_at
+        )
+        for session in sessions
+    ]
 
 
 @app.post("/index/clear")
@@ -651,6 +872,30 @@ async def reset_system():
         retriever.memory.clear()
 
     return {"status": "reset"}
+
+
+@app.post("/db/clear")
+async def clear_database():
+    """Clear all chat sessions, vectors, documents, and embeddings."""
+    if not vector_store or not session_store:
+        raise HTTPException(status_code=500, detail="System not initialized")
+
+    cancelled_jobs.update(list(ingestion_jobs.keys()))
+    ingestion_jobs.clear()
+    vector_store.clear_collection()
+    session_store.clear_all()
+
+    images_root = Path("data") / "images"
+    if images_root.exists():
+        try:
+            shutil.rmtree(images_root)
+        except Exception as e:
+            logger.warning("Failed to clear images: %s", e)
+
+    if retriever:
+        retriever.memory.clear()
+
+    return {"status": "cleared"}
 
 
 @app.post("/conversation/clear")

@@ -4,6 +4,8 @@ Hybrid retrieval logic with memory, coreference resolution, and context-aware se
 
 from typing import List, Dict, Optional, Tuple, Callable
 from .qdrant_client import QdrantVectorStore
+from .bm25_index import BM25Index
+from .reranker import ChunkReranker
 from ..coref_intent.coref_resolver import CorefResolver
 from ..coref_intent.intent_classifier import IntentClassifier
 from ..embeddings.nomic_text_embed import NomicTextEmbedder
@@ -22,8 +24,10 @@ class HybridRetriever:
         vision_embedder: Optional[NomicVisionEmbedder] = None,
         coref_resolver: Optional[CorefResolver] = None,
         intent_classifier: Optional[IntentClassifier] = None,
-        top_k: int = 3,
-        similarity_threshold: float = 0.7,
+        bm25_index: Optional[BM25Index] = None,
+        reranker: Optional[ChunkReranker] = None,
+        top_k: int = 5,
+        similarity_threshold: float = 0.5,
         memory: Optional[ConversationMemory] = None,
         query_rewriter: Optional[Callable[[str, str], str]] = None,
         max_context_chars: int = 12000
@@ -34,16 +38,24 @@ class HybridRetriever:
         Args:
             vector_store: Qdrant vector store instance
             text_embedder: Text embedding model
+            vision_embedder: Optional vision embedding model
             coref_resolver: Optional coreference resolver
             intent_classifier: Optional intent classifier
-            top_k: Number of chunks to retrieve
-            similarity_threshold: Minimum similarity score
+            bm25_index: Optional BM25 index for lexical search
+            reranker: Optional cross-encoder reranker
+            top_k: Number of final chunks to return
+            similarity_threshold: Minimum similarity score for vector search
+            memory: Conversation memory instance
+            query_rewriter: Optional LLM-based query rewriter
+            max_context_chars: Maximum context characters for LLM
         """
         self.vector_store = vector_store
         self.text_embedder = text_embedder
         self.vision_embedder = vision_embedder
         self.coref_resolver = coref_resolver
         self.intent_classifier = intent_classifier
+        self.bm25_index = bm25_index
+        self.reranker = reranker
         self.top_k = top_k
         self.similarity_threshold = similarity_threshold
         self.max_context_chars = max_context_chars
@@ -163,22 +175,25 @@ class HybridRetriever:
                 ]
             )
         
-        # Step 5: Search vector store
+        # Step 5: Search vector store (text)
         from qdrant_client.models import Filter, FieldCondition, MatchValue
         text_filter = Filter(must=[FieldCondition(key="type", match=MatchValue(value="text"))])
         if filter_condition:
             text_filter.must.extend(filter_condition.must)
 
         limit = top_k or self.top_k
+        # Fetch more candidates for RRF fusion (will be narrowed by reranker)
+        fetch_k = max(limit * 4, 20)
+
         search_results = self.vector_store.search(
             query_vector=query_vector,
-            limit=limit,
+            limit=fetch_k,
             score_threshold=self.similarity_threshold,
             filter=text_filter
         )
         
-        # Step 6: Add memory context if available
-        retrieved_chunks: List[Dict] = []
+        # Step 6: Convert vector results to chunk dicts
+        vector_chunks: List[Dict] = []
         for result in search_results:
             chunk = {
                 "text": result["payload"].get("text", ""),
@@ -188,10 +203,38 @@ class HybridRetriever:
                     if k != "text"
                 }
             }
-            retrieved_chunks.append(chunk)
+            vector_chunks.append(chunk)
 
-        # Optional image retrieval
-        image_results: List[Dict] = []
+        # Step 7: BM25 lexical search (if available)
+        bm25_chunks: List[Dict] = []
+        if self.bm25_index and self.bm25_index.is_built:
+            bm25_chunks = self.bm25_index.search(
+                query=resolved_query,
+                top_k=fetch_k,
+                file_id=file_id
+            )
+
+        # Step 8: RRF fusion (if BM25 results exist)
+        if bm25_chunks:
+            fused_chunks = self._rrf_fusion(vector_chunks, bm25_chunks)
+        else:
+            fused_chunks = vector_chunks
+
+        # Step 9: Cross-encoder reranking (if available)
+        if self.reranker and fused_chunks:
+            text_chunks_for_rerank = [
+                c for c in fused_chunks if c.get("text")
+            ]
+            reranked = self.reranker.rerank(
+                query=resolved_query,
+                chunks=text_chunks_for_rerank,
+                top_k=limit
+            )
+        else:
+            reranked = fused_chunks[:limit]
+
+        # Step 10: Optional image retrieval
+        image_items: List[Dict] = []
         if use_multimodal and image_query is not None and self.vision_embedder is not None:
             image_emb = self.vision_embedder.encode([image_query], show_progress=False)
             image_vector = image_emb[0].tolist()
@@ -206,32 +249,21 @@ class HybridRetriever:
                 score_threshold=self.similarity_threshold,
                 filter=image_filter
             )
-
-        # Normalize scores within each modality
-        retrieved_chunks = self._normalize_scores(retrieved_chunks)
-        image_items = []
-        if image_results:
-            image_items = self._normalize_scores([
-                {
+            for r in image_results:
+                image_items.append({
                     "text": "",
                     "score": r["score"],
                     "metadata": {k: v for k, v in r["payload"].items() if k != "text"}
-                }
-                for r in image_results
-            ])
+                })
 
-        # Merge and rerank
+        # Step 11: Merge text + image results
         merged = []
-        for item in retrieved_chunks:
+        for item in reranked:
             item["metadata"].setdefault("type", "text")
-            item["hybrid_score"] = item.get("normalized_score", item["score"])
             merged.append(item)
         for item in image_items:
             item["metadata"].setdefault("type", "image")
-            item["hybrid_score"] = item.get("normalized_score", item["score"])
             merged.append(item)
-
-        merged.sort(key=lambda x: x.get("hybrid_score", 0), reverse=True)
 
         # Deduplicate by chunk_id or image_path
         seen = set()
@@ -243,11 +275,64 @@ class HybridRetriever:
                 continue
             seen.add(key)
             deduped.append(item)
-        
-        # Optionally add context from memory
-        # This could be enhanced to include relevant past context
+
+        # Store retrieval stats for frontend
+        self._last_retrieval_stats = {
+            "vector_candidates": len(vector_chunks),
+            "bm25_candidates": len(bm25_chunks),
+            "fused_candidates": len(fused_chunks) if bm25_chunks else len(vector_chunks),
+            "reranked_count": len(reranked),
+            "image_candidates": len(image_items),
+            "final_count": len(deduped)
+        }
         
         return deduped, resolved_query, intent
+    
+    def get_last_retrieval_stats(self) -> Dict:
+        """Return stats from the most recent retrieval call."""
+        return getattr(self, '_last_retrieval_stats', {})
+
+    @staticmethod
+    def _rrf_fusion(
+        vector_results: List[Dict],
+        bm25_results: List[Dict],
+        k: int = 60
+    ) -> List[Dict]:
+        """
+        Reciprocal Rank Fusion of vector and BM25 results.
+        
+        RRF score = Σ 1/(k + rank_i) for each retriever i.
+        
+        Args:
+            vector_results: Results from vector search.
+            bm25_results: Results from BM25 search.
+            k: RRF constant (default 60).
+        
+        Returns:
+            Fused and sorted list of chunks.
+        """
+        scores: Dict[str, float] = {}
+        item_map: Dict[str, Dict] = {}
+
+        for rank, item in enumerate(vector_results):
+            key = item.get("metadata", {}).get("chunk_id", str(id(item)))
+            scores[key] = scores.get(key, 0) + 1.0 / (k + rank + 1)
+            if key not in item_map:
+                item_map[key] = item
+
+        for rank, item in enumerate(bm25_results):
+            key = item.get("metadata", {}).get("chunk_id", str(id(item)))
+            scores[key] = scores.get(key, 0) + 1.0 / (k + rank + 1)
+            if key not in item_map:
+                item_map[key] = item
+
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        result = []
+        for key, rrf_score in ranked:
+            item = item_map[key]
+            item["rrf_score"] = rrf_score
+            result.append(item)
+        return result
     
     def format_context_for_llm(self, chunks: List[Dict]) -> str:
         """
